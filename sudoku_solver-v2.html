@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sudoku Solver with OCR</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+  }
+
+  #sudoku {
+    border-collapse: collapse;
+    margin: 20px auto;
+  }
+
+  #sudoku td {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid #999;
+  }
+
+  #sudoku input {
+    width: 85%;
+    height: 90%;
+    text-align: center;
+    font-size: 18px;
+    outline: none;
+  }
+
+  /* Thicker borders for 3x3 blocks */
+  #sudoku tr:nth-child(3n) td {
+    border-bottom: 3px solid #000;
+  }
+  #sudoku tr td:nth-child(3n) {
+    border-right: 3px solid #000;
+  }
+  #sudoku tr:first-child td {
+    border-top: 3px solid #000;
+  }
+  #sudoku tr td:first-child {
+    border-left: 3px solid #000;
+  }
+
+  .given {
+    background: #eee;
+    font-weight: bold;
+  }
+
+  #controls {
+    margin: 20px;
+  }
+
+  #message {
+    margin-top: 10px;
+    color: green;
+  }
+
+  #message.invalid {
+    color: red;
+  }
+
+  #progress-container {
+    width: 400px;
+    margin: 10px auto;
+    border: 1px solid #999;
+    height: 20px;
+  }
+
+  #progress-bar {
+    height: 100%;
+    width: 0%;
+    background-color: #4caf50;
+  }
+</style>
+</head>
+<body>
+  <h1>Sudoku Solver</h1>
+  <table id="sudoku"></table>
+
+  <div id="controls">
+    <input type="file" id="imgInput" accept="image/*"><br><br>
+    <button onclick="solveSudoku()">Solve</button>
+    <button onclick="resetBoard()">Reset</button>
+  </div>
+
+  <div id="progress-container">
+    <div id="progress-bar"></div>
+  </div>
+
+  <div id="message"></div>
+
+  <script>
+    const sudoku = document.getElementById("sudoku");
+    let cells = [];
+
+    for (let r = 0; r < 9; r++) {
+      const row = sudoku.insertRow();
+      for (let c = 0; c < 9; c++) {
+        const cell = row.insertCell();
+        const input = document.createElement("input");
+        input.maxLength = 1;
+        input.oninput = () => { input.value = input.value.replace(/[^1-9]/, ''); };
+        cell.appendChild(input);
+        cells.push({ input, given: false });
+      }
+    }
+
+    function getBoard() { return cells.map(c => c.input.value ? parseInt(c.input.value) : 0); }
+    function setBoard(board) { for (let i = 0; i < 81; i++) cells[i].input.value = board[i] === 0 ? '' : board[i]; }
+    function resetBoard() { cells.forEach(c => c.input.value = ''); document.getElementById('message').textContent = ''; }
+    function markGivens() { cells.forEach(c => c.given = !!c.input.value); cells.forEach(c => c.input.classList.toggle('given', c.given)); }
+
+    function isValid(board, row, col, num) {
+      for (let i = 0; i < 9; i++) { if (board[row*9 + i] === num || board[i*9 + col] === num) return false; }
+      const sr = Math.floor(row/3)*3, sc = Math.floor(col/3)*3;
+      for (let r = 0; r < 3; r++) { for (let c = 0; c < 3; c++) { if (board[(sr+r)*9 + (sc+c)] === num) return false; } }
+      return true;
+    }
+
+    function solve(board) { for (let i = 0; i < 81; i++) { if (board[i] === 0) { for (let num = 1; num <= 9; num++) { if (isValid(board, Math.floor(i/9), i%9, num)) { board[i] = num; if (solve(board)) return true; board[i] = 0; } } return false; } } return true; }
+
+    function solveSudoku() { const board = getBoard(); if (solve(board)) { setBoard(board); document.getElementById('message').textContent = 'Solved!'; document.getElementById('message').classList.remove('invalid'); } else { document.getElementById('message').textContent = 'No solution found!'; document.getElementById('message').classList.add('invalid'); } }
+
+    const progressBar = document.getElementById('progress-bar');
+
+    // OCR with preprocessing and progress bar
+    document.getElementById("imgInput").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      document.getElementById('message').textContent = 'Processing image (cell by cell)...';
+      document.getElementById('message').classList.remove('invalid');
+
+      try {
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        await img.decode();
+
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        const size = Math.min(img.width, img.height);
+        canvas.width = size; canvas.height = size;
+        ctx.drawImage(img, 0, 0, size, size);
+
+        const cellSize = size / 9;
+
+        for (let row = 0; row < 9; row++) {
+          for (let col = 0; col < 9; col++) {
+            const cellIndex = row*9 + col;
+
+            const cellCanvas = document.createElement("canvas");
+            const cellCtx = cellCanvas.getContext("2d");
+            const scale = 3; // scale up for better recognition
+            cellCanvas.width = cellSize*scale;
+            cellCanvas.height = cellSize*scale;
+
+            cellCtx.drawImage(canvas, col*cellSize, row*cellSize, cellSize, cellSize, 0, 0, cellCanvas.width, cellCanvas.height);
+
+            // Preprocess: grayscale + threshold
+            let imageData = cellCtx.getImageData(0, 0, cellCanvas.width, cellCanvas.height);
+            let data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+              const gray = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+              const val = gray > 128 ? 255 : 0;
+              data[i] = data[i+1] = data[i+2] = val;
+              data[i+3] = 255;
+            }
+            cellCtx.putImageData(imageData, 0, 0);
+
+            const { data: ocrData } = await Tesseract.recognize(cellCanvas, 'eng', {
+              tessedit_char_whitelist: '123456789',
+              tessedit_pageseg_mode: 10
+            });
+
+            let digit = (ocrData.text||'').trim();
+            cells[cellIndex].input.value = digit.match(/^[1-9]$/) ? digit : '';
+
+            // Update progress bar
+            const completedCells = row*9 + col + 1;
+            progressBar.style.width = (completedCells/81*100) + '%';
+          }
+        }
+
+        markGivens();
+        progressBar.style.width = '100%';
+        setTimeout(()=>{ progressBar.style.width='0%'; }, 500);
+        document.getElementById('message').textContent = 'Sudoku loaded from image — click Solve.';
+
+      } catch(err) {
+        console.error(err);
+        document.getElementById('message').textContent = 'Error running OCR.';
+        document.getElementById('message').classList.add('invalid');
+      }
+    });
+  </script>
+</body>
+</html>
